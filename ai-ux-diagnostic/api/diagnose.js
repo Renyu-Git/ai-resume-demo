@@ -100,12 +100,10 @@ function validateInput(body) {
 }
 
 function extractOutputText(payload) {
-  if (typeof payload.output_text === "string") return payload.output_text;
-  for (const item of payload.output || []) {
-    for (const content of item.content || []) {
-      if (content.type === "output_text" && typeof content.text === "string") return content.text;
-      if (content.type === "refusal") throw new Error("模型无法分析这张图片，请更换无敏感内容的产品截图");
-    }
+  const content = payload.choices?.[0]?.message?.content;
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content.find((item) => item?.type === "text" && typeof item.text === "string")?.text || "";
   }
   return "";
 }
@@ -132,7 +130,8 @@ function normalizeResult(result) {
 export default async function handler(request, response) {
   if (request.method === "GET") {
     return json(response, 200, {
-      status: process.env.OPENAI_API_KEY ? "ready" : "configuration_required",
+      status: process.env.DASHSCOPE_API_KEY ? "ready" : "configuration_required",
+      provider: "qwen",
     });
   }
   if (request.method !== "POST") {
@@ -140,10 +139,10 @@ export default async function handler(request, response) {
     return json(response, 405, { message: "仅支持 POST 请求" });
   }
 
-  if (!process.env.OPENAI_API_KEY) {
+  if (!process.env.DASHSCOPE_API_KEY) {
     return json(response, 503, {
       code: "MODEL_NOT_CONFIGURED",
-      message: "真实 AI 尚未配置，请先在 Vercel 添加 OPENAI_API_KEY",
+      message: "真实 AI 尚未配置，请先在 Vercel 添加 DASHSCOPE_API_KEY",
     });
   }
 
@@ -158,50 +157,52 @@ export default async function handler(request, response) {
     return json(response, 400, { message: error.message || "请求内容无效" });
   }
 
-  const model = process.env.OPENAI_MODEL || "gpt-5.6-luna";
+  const model = process.env.QWEN_MODEL || "qwen3-vl-flash";
+  const baseUrl = (process.env.DASHSCOPE_BASE_URL || "https://dashscope.aliyuncs.com/compatible-mode/v1").replace(/\/$/, "");
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 55000);
 
   try {
-    const apiResponse = await fetch("https://api.openai.com/v1/responses", {
+    const apiResponse = await fetch(`${baseUrl}/chat/completions`, {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+        Authorization: `Bearer ${process.env.DASHSCOPE_API_KEY}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
         model,
-        store: false,
-        input: [
+        messages: [
+          {
+            role: "system",
+            content: "你是一名严格、克制的高级用户体验评估专家。你必须只输出有效 JSON，不得输出 Markdown 或额外说明。",
+          },
           {
             role: "user",
             content: [
               {
-                type: "input_text",
-                text: `你是一名严格、克制的高级用户体验评估专家。请诊断这张“${input.pageName}”截图。\n用户核心任务：${input.task || "未提供，请从页面主要信息谨慎推断"}\n\n要求：\n1. 只报告截图中有明确视觉证据的问题，优先输出 1–5 个高价值问题，不要为了凑数重复表达。\n2. location 必须说明证据所在的具体页面区域；evidence 使用相对整张截图的 0–1 归一化坐标，x/y 为左上角，框选范围尽量紧贴证据。\n3. severity：high 表示阻碍核心任务或有明显误操作风险；medium 表示显著增加理解/操作成本；low 表示局部改进。\n4. suggestion 必须具体、可执行，并对应问题原因。\n5. theory 仅引用真正适用的 UX 原则；confidence 反映你对视觉证据的把握。\n6. 使用简体中文，避免空泛表述，不分析图片水印或截图工具本身。`,
+                type: "image_url",
+                image_url: { url: input.image },
+                max_pixels: 2621440,
               },
-              { type: "input_image", image_url: input.image, detail: "high" },
+              {
+                type: "text",
+                text: `请诊断这张“${input.pageName}”截图。\n用户核心任务：${input.task || "未提供，请从页面主要信息谨慎推断"}\n\n要求：\n1. 只报告截图中有明确视觉证据的问题，输出 1–5 个高价值问题，不要为了凑数重复表达。\n2. location 必须说明证据所在的具体页面区域。\n3. evidence 必须使用相对整张截图的 0–1 小数坐标，x/y 为左上角，width/height 为框的宽高，框选范围尽量紧贴证据。禁止输出像素值或 0–1000 坐标。\n4. severity 只能是 high、medium、low：high 表示阻碍核心任务或有明显误操作风险；medium 表示显著增加理解或操作成本；low 表示局部改进。\n5. suggestion 必须具体、可执行，并对应问题原因。\n6. theory 只引用真正适用的 UX 原则；confidence 为 0–1 小数。\n7. 使用简体中文，避免空泛表述，不分析图片水印或截图工具本身。\n\n请只返回以下结构的 JSON：\n{"issues":[{"title":"问题标题","severity":"high|medium|low","location":"具体页面区域","description":"问题描述","suggestion":"解决建议","confidence":0.85,"reason":"判断理由","theory":["适用原则"],"evidence":{"x":0.1,"y":0.2,"width":0.3,"height":0.1}}]}`,
+              },
             ],
           },
         ],
-        text: {
-          format: {
-            type: "json_schema",
-            name: "ux_diagnosis",
-            strict: true,
-            schema: diagnosisSchema,
-          },
-        },
-        max_output_tokens: 5000,
+        response_format: { type: "json_object" },
+        enable_thinking: false,
+        max_tokens: 3500,
       }),
       signal: controller.signal,
     });
 
     const payload = await apiResponse.json().catch(() => ({}));
     if (!apiResponse.ok) {
-      const upstreamMessage = payload.error?.message || "OpenAI 请求失败";
-      if (apiResponse.status === 401) return json(response, 503, { message: "OpenAI API Key 无效或已失效" });
-      if (apiResponse.status === 429) return json(response, 429, { message: "OpenAI 当前额度不足或请求过于频繁" });
+      const upstreamMessage = payload.error?.message || payload.message || "千问请求失败";
+      if (apiResponse.status === 401) return json(response, 503, { message: "百炼 API Key 无效、地域不匹配或已失效" });
+      if (apiResponse.status === 429) return json(response, 429, { message: "千问当前额度不足或请求过于频繁" });
       return json(response, 502, { message: upstreamMessage.slice(0, 180) });
     }
 
@@ -218,4 +219,3 @@ export default async function handler(request, response) {
     clearTimeout(timeout);
   }
 }
-
