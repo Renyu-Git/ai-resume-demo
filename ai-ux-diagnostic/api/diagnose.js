@@ -3,7 +3,7 @@ const MAX_REQUESTS_PER_WINDOW = 5;
 const requestBuckets = globalThis.__uxDiagnosisBuckets ?? new Map();
 globalThis.__uxDiagnosisBuckets = requestBuckets;
 
-const SYSTEM_PROMPT = `你是一名资深互联网产品体验分析专家，负责分析用户提供的产品截图，发现其中可能影响用户理解、操作和任务完成的体验问题。
+const SYSTEM_PROMPT = `你是一名资深互联网产品体验分析专家，负责分析用户提供的产品截图或操作录屏关键帧，发现其中可能影响用户理解、操作和任务完成的体验问题。
 
 你的定位是“辅助问题发现”，不是代替产品经理或体验专家做最终判断。分析结果必须有明确证据，能定位到具体页面元素，判断过程可解释，结论可由人工复核，不把猜测包装成事实。
 
@@ -13,7 +13,7 @@ const SYSTEM_PROMPT = `你是一名资深互联网产品体验分析专家，负
 3. 当前未提供内部体验质量模型、体验红线或业务规则，不得自行编造内部规则或假设页面违反内部规范。
 
 分析要求：
-- 仅分析截图中能够直接观察的问题；不得根据单张截图推测完整流程、后台故障或尚未发生的风险。
+- 仅分析输入材料中能够直接观察，或由连续关键帧合理确认的问题；不得根据单张截图推测完整流程、后台故障或尚未发生的风险。
 - 不得将个人审美偏好直接判定为体验问题，不得编造按钮、文案、页面状态、用户行为或系统反馈。
 - 只有同时存在可定位证据、可说明的原则或规范、以及对用户理解、操作效率、任务完成、错误风险或信任的具体影响时才输出问题。
 - 一个问题只描述一个主要根因；合并重复问题；最多输出 5 个证据相对充分且对当前任务影响最大的问题。
@@ -59,15 +59,41 @@ function parseBody(request) {
 function validateInput(body) {
   const pageName = String(body.pageName || "").trim().slice(0, 80);
   const task = String(body.task || "").trim().slice(0, 300);
-  const image = String(body.image || "");
   if (!pageName) throw new Error("请填写页面名称");
+  const mediaType = body.mediaType === "video" ? "video" : "image";
+  if (mediaType === "video") {
+    const frames = Array.isArray(body.frames) ? body.frames.map(String) : [];
+    if (frames.length < 4 || frames.length > 16) {
+      throw new Error("视频需要提取 4–16 帧画面");
+    }
+    if (frames.some((frame) => !/^data:image\/jpeg;base64,/i.test(frame))) {
+      throw new Error("视频关键帧格式无效");
+    }
+    if (frames.reduce((total, frame) => total + frame.length, 0) > 7.5 * 1024 * 1024) {
+      throw new Error("视频关键帧数据过大，请压缩后重试");
+    }
+    const duration = Number(body.duration);
+    const fps = Number(body.fps);
+    const timestamps = Array.isArray(body.timestamps)
+      ? body.timestamps.map(Number).filter(Number.isFinite).slice(0, frames.length)
+      : [];
+    if (!Number.isFinite(duration) || duration <= 0 || duration > 90) {
+      throw new Error("演示版暂支持 90 秒以内的视频");
+    }
+    if (!Number.isFinite(fps) || fps <= 0 || fps > 4) {
+      throw new Error("视频抽帧频率无效");
+    }
+    return { pageName, task, mediaType, frames, duration, fps, timestamps };
+  }
+
+  const image = String(body.image || "");
   if (!/^data:image\/(png|jpeg|webp);base64,/i.test(image)) {
     throw new Error("仅支持 PNG、JPEG 或 WebP 图片");
   }
   if (image.length > 5.6 * 1024 * 1024) {
     throw new Error("图片不能超过 4 MB");
   }
-  return { pageName, task, image };
+  return { pageName, task, mediaType, image };
 }
 
 function extractOutputText(payload) {
@@ -113,8 +139,15 @@ function normalizeResult(result) {
 }
 
 function buildUserPrompt(input) {
-  return `本次用户任务：${input.task || "未提供；仅分析截图中的可观察证据，不推测完整操作流程"}
+  const material = input.mediaType === "video"
+    ? `一段时长 ${input.duration.toFixed(1)} 秒的操作录屏，均匀抽取 ${input.frames.length} 帧；采样时间点（秒）：${input.timestamps.map((time) => time.toFixed(1)).join("、")}`
+    : "一张页面截图";
+  const locationRule = input.mediaType === "video"
+    ? "问题位置必须写明 MM:SS 格式的时间点或时间段，并同时描述用户操作与可见的系统反馈；不要输出坐标或画面框选。"
+    : "问题位置仅使用清晰的文本描述，不输出坐标。描述中应包含页面区域、控件或可见文案等可供人工复核的证据。";
+  return `本次用户任务：${input.task || "未提供；仅分析材料中的可观察证据，不推测完整操作流程"}
 页面名称：${input.pageName}
+本次分析材料：${material}
 内部体验质量模型：未提供
 体验红线与业务规则：未提供
 补充业务背景：未提供
@@ -122,7 +155,7 @@ function buildUserPrompt(input) {
 请输出一个 JSON 对象，结构为：
 {"issues":[{"problem_title":"不超过20个汉字","problem_description":"客观现象及用户影响","severity":"高/中/低","problem_location":"具体页面区域、控件、可见文案和可复核证据","solution":"与问题根因对应的可执行建议","confidence":0.00,"reasoning":"从客观证据到问题结论的判断逻辑","theoretical_basis":["直接相关的尼尔森原则或通用交互规范"]}]}
 
-问题位置仅使用清晰的文本描述，不输出坐标。描述中应包含页面区域、控件或可见文案等可供人工复核的证据。没有发现证据充分的问题时输出 {"issues":[]}。生成前检查证据、位置、用户影响、严重程度、建议、理论依据、重复问题和 JSON 合法性。`;
+${locationRule} 没有发现证据充分的问题时输出 {"issues":[]}。生成前检查证据、位置、用户影响、严重程度、建议、理论依据、重复问题和 JSON 合法性。`;
 }
 
 export default async function handler(request, response) {
@@ -173,10 +206,15 @@ export default async function handler(request, response) {
           { role: "system", content: SYSTEM_PROMPT },
           {
             role: "user",
-            content: [
-              { type: "image_url", image_url: { url: input.image }, max_pixels: 2621440 },
-              { type: "text", text: buildUserPrompt(input) },
-            ],
+            content: input.mediaType === "video"
+              ? [
+                  { type: "video", video: input.frames, fps: input.fps, max_pixels: 655360 },
+                  { type: "text", text: buildUserPrompt(input) },
+                ]
+              : [
+                  { type: "image_url", image_url: { url: input.image }, max_pixels: 2621440 },
+                  { type: "text", text: buildUserPrompt(input) },
+                ],
           },
         ],
         response_format: { type: "json_object" },
