@@ -91,23 +91,6 @@ function normalizeSeverity(value) {
   return "medium";
 }
 
-function normalizeEvidence(value) {
-  if (!value || typeof value !== "object") return null;
-  const x = Number(value.x);
-  const y = Number(value.y);
-  const width = Number(value.width);
-  const height = Number(value.height);
-  if (![x, y, width, height].every(Number.isFinite) || width <= 0 || height <= 0) return null;
-  const normalizedX = Math.min(0.98, Math.max(0, x));
-  const normalizedY = Math.min(0.98, Math.max(0, y));
-  return {
-    x: normalizedX,
-    y: normalizedY,
-    width: Math.min(1 - normalizedX, Math.max(0.02, width)),
-    height: Math.min(1 - normalizedY, Math.max(0.02, height)),
-  };
-}
-
 function normalizeResult(result) {
   const source = Array.isArray(result) ? result : result?.issues;
   const issues = Array.isArray(source) ? source : [];
@@ -125,7 +108,6 @@ function normalizeResult(result) {
       confidence: Math.min(1, Math.max(0, Number(issue.confidence) || 0)),
       reason: cleanText(issue.reasoning ?? issue.reason, "模型未返回完整判断理由", 300),
       theory,
-      evidence: normalizeEvidence(issue.evidence_box ?? issue.evidence),
     };
   });
 }
@@ -138,9 +120,9 @@ function buildUserPrompt(input) {
 补充业务背景：未提供
 
 请输出一个 JSON 对象，结构为：
-{"issues":[{"problem_title":"不超过20个汉字","problem_description":"客观现象及用户影响","severity":"高/中/低","problem_location":"具体页面区域、控件、可见文案和可复核证据","solution":"与问题根因对应的可执行建议","confidence":0.00,"reasoning":"从客观证据到问题结论的判断逻辑","theoretical_basis":["直接相关的尼尔森原则或通用交互规范"],"evidence_box":{"x":0.00,"y":0.00,"width":0.00,"height":0.00}}]}
+{"issues":[{"problem_title":"不超过20个汉字","problem_description":"客观现象及用户影响","severity":"高/中/低","problem_location":"具体页面区域、控件、可见文案和可复核证据","solution":"与问题根因对应的可执行建议","confidence":0.00,"reasoning":"从客观证据到问题结论的判断逻辑","theoretical_basis":["直接相关的尼尔森原则或通用交互规范"]}]}
 
-evidence_box 使用相对整张截图的 0 到 1 小数坐标，x、y 为左上角，width、height 为宽高。无法可靠定位时必须返回 null，不得编造坐标。没有发现证据充分的问题时输出 {"issues":[]}。生成前检查证据、位置、用户影响、严重程度、建议、理论依据、重复问题和 JSON 合法性。`;
+问题位置仅使用清晰的文本描述，不输出坐标。描述中应包含页面区域、控件或可见文案等可供人工复核的证据。没有发现证据充分的问题时输出 {"issues":[]}。生成前检查证据、位置、用户影响、严重程度、建议、理论依据、重复问题和 JSON 合法性。`;
 }
 
 export default async function handler(request, response) {
