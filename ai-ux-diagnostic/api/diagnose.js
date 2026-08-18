@@ -63,27 +63,38 @@ function validateInput(body) {
   const mediaType = body.mediaType === "video" ? "video" : "image";
   if (mediaType === "video") {
     const frames = Array.isArray(body.frames) ? body.frames.map(String) : [];
-    if (frames.length < 4 || frames.length > 16) {
-      throw new Error("视频需要提取 4–16 帧画面");
+    if (frames.length < 4 || frames.length > 40) {
+      throw new Error("视频需要提取 4–40 帧变化证据");
     }
     if (frames.some((frame) => !/^data:image\/jpeg;base64,/i.test(frame))) {
       throw new Error("视频关键帧格式无效");
     }
-    if (frames.reduce((total, frame) => total + frame.length, 0) > 7.5 * 1024 * 1024) {
+    if (frames.reduce((total, frame) => total + frame.length, 0) > 4.2 * 1024 * 1024) {
       throw new Error("视频关键帧数据过大，请压缩后重试");
     }
     const duration = Number(body.duration);
-    const fps = Number(body.fps);
     const timestamps = Array.isArray(body.timestamps)
       ? body.timestamps.map(Number).filter(Number.isFinite).slice(0, frames.length)
       : [];
     if (!Number.isFinite(duration) || duration <= 0 || duration > 90) {
       throw new Error("演示版暂支持 90 秒以内的视频");
     }
-    if (!Number.isFinite(fps) || fps <= 0 || fps > 4) {
-      throw new Error("视频抽帧频率无效");
+    if (timestamps.length !== frames.length
+      || timestamps.some((time, index) => time < 0 || time > duration || (index > 0 && time <= timestamps[index - 1]))) {
+      throw new Error("视频证据帧时间映射无效");
     }
-    return { pageName, task, mediaType, frames, duration, fps, timestamps };
+    const scanFrameCount = Math.max(frames.length, Math.min(240, Number(body.scanFrameCount) || frames.length));
+    const changeWindows = Array.isArray(body.changeWindows)
+      ? body.changeWindows.map((window) => ({
+          start: Number(window?.start),
+          end: Number(window?.end),
+        })).filter((window) => Number.isFinite(window.start)
+          && Number.isFinite(window.end)
+          && window.start >= 0
+          && window.end >= window.start
+          && window.end <= duration).slice(0, 20)
+      : [];
+    return { pageName, task, mediaType, frames, duration, timestamps, changeWindows, scanFrameCount };
   }
 
   const image = String(body.image || "");
@@ -138,12 +149,18 @@ function normalizeResult(result) {
   });
 }
 
+function formatTimestamp(seconds) {
+  const minutes = Math.floor(seconds / 60);
+  const remainder = seconds - minutes * 60;
+  return `${String(minutes).padStart(2, "0")}:${remainder.toFixed(1).padStart(4, "0")}`;
+}
+
 function buildUserPrompt(input) {
   const material = input.mediaType === "video"
-    ? `一段时长 ${input.duration.toFixed(1)} 秒的操作录屏，均匀抽取 ${input.frames.length} 帧；采样时间点（秒）：${input.timestamps.map((time) => time.toFixed(1)).join("、")}`
+    ? `一段时长 ${input.duration.toFixed(1)} 秒的操作录屏。浏览器先扫描 ${input.scanFrameCount} 帧，再通过相邻帧差异筛选出 ${input.frames.length} 帧变化证据。证据帧按时间升序排列但不是等间隔采样；帧序号与真实时间映射：${input.timestamps.map((time, index) => `帧${String(index + 1).padStart(2, "0")}=${formatTimestamp(time)}`).join("、")}。检测到的变化区间：${input.changeWindows.length > 0 ? input.changeWindows.map((window) => `${formatTimestamp(window.start)}–${formatTimestamp(window.end)}`).join("、") : "未单独提供"}`
     : "一张页面截图";
   const locationRule = input.mediaType === "video"
-    ? "问题位置必须写明 MM:SS 格式的时间点或时间段，并同时描述用户操作与可见的系统反馈；不要输出坐标或画面框选。"
+    ? "必须将前后证据帧作为有序序列进行比较，只在序列能够合理确认状态变化时输出流程性问题。问题位置必须写明 MM:SS 格式的时间点或时间段，并同时描述用户操作与可见的系统反馈；不要输出坐标或画面框选。"
     : "问题位置仅使用清晰的文本描述，不输出坐标。描述中应包含页面区域、控件或可见文案等可供人工复核的证据。";
   return `本次用户任务：${input.task || "未提供；仅分析材料中的可观察证据，不推测完整操作流程"}
 页面名称：${input.pageName}
@@ -208,7 +225,11 @@ export default async function handler(request, response) {
             role: "user",
             content: input.mediaType === "video"
               ? [
-                  { type: "video", video: input.frames, fps: input.fps, max_pixels: 655360 },
+                  { type: "text", text: "以下是通过相邻帧比对筛选出的变化证据序列。每张图前的文字是该帧在原视频中的真实时间。" },
+                  ...input.frames.flatMap((frame, index) => [
+                    { type: "text", text: `证据帧 ${String(index + 1).padStart(2, "0")}，时间 ${formatTimestamp(input.timestamps[index])}` },
+                    { type: "image_url", image_url: { url: frame }, max_pixels: 655360 },
+                  ]),
                   { type: "text", text: buildUserPrompt(input) },
                 ]
               : [
