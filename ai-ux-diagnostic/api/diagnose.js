@@ -3,59 +3,30 @@ const MAX_REQUESTS_PER_WINDOW = 5;
 const requestBuckets = globalThis.__uxDiagnosisBuckets ?? new Map();
 globalThis.__uxDiagnosisBuckets = requestBuckets;
 
-const diagnosisSchema = {
-  type: "object",
-  additionalProperties: false,
-  required: ["issues"],
-  properties: {
-    issues: {
-      type: "array",
-      minItems: 1,
-      maxItems: 5,
-      items: {
-        type: "object",
-        additionalProperties: false,
-        required: [
-          "title",
-          "severity",
-          "location",
-          "description",
-          "suggestion",
-          "confidence",
-          "reason",
-          "theory",
-          "evidence",
-        ],
-        properties: {
-          title: { type: "string", minLength: 4, maxLength: 48 },
-          severity: { type: "string", enum: ["high", "medium", "low"] },
-          location: { type: "string", minLength: 4, maxLength: 100 },
-          description: { type: "string", minLength: 12, maxLength: 220 },
-          suggestion: { type: "string", minLength: 12, maxLength: 220 },
-          confidence: { type: "number", minimum: 0, maximum: 1 },
-          reason: { type: "string", minLength: 12, maxLength: 220 },
-          theory: {
-            type: "array",
-            minItems: 1,
-            maxItems: 4,
-            items: { type: "string", minLength: 2, maxLength: 40 },
-          },
-          evidence: {
-            type: "object",
-            additionalProperties: false,
-            required: ["x", "y", "width", "height"],
-            properties: {
-              x: { type: "number", minimum: 0, maximum: 1 },
-              y: { type: "number", minimum: 0, maximum: 1 },
-              width: { type: "number", minimum: 0.05, maximum: 1 },
-              height: { type: "number", minimum: 0.05, maximum: 1 },
-            },
-          },
-        },
-      },
-    },
-  },
-};
+const SYSTEM_PROMPT = `你是一名资深互联网产品体验分析专家，负责分析用户提供的产品截图，发现其中可能影响用户理解、操作和任务完成的体验问题。
+
+你的定位是“辅助问题发现”，不是代替产品经理或体验专家做最终判断。分析结果必须有明确证据，能定位到具体页面元素，判断过程可解释，结论可由人工复核，不把猜测包装成事实。
+
+分析依据：
+1. 尼尔森十大可用性原则：系统状态可见、系统与现实世界匹配、用户控制与自由、一致性与标准、错误预防、识别优于回忆、灵活性与使用效率、简洁且美观、帮助用户识别诊断和恢复错误、帮助与文档。
+2. 通用交互规范和输入材料中的可观察证据。
+3. 当前未提供内部体验质量模型、体验红线或业务规则，不得自行编造内部规则或假设页面违反内部规范。
+
+分析要求：
+- 仅分析截图中能够直接观察的问题；不得根据单张截图推测完整流程、后台故障或尚未发生的风险。
+- 不得将个人审美偏好直接判定为体验问题，不得编造按钮、文案、页面状态、用户行为或系统反馈。
+- 只有同时存在可定位证据、可说明的原则或规范、以及对用户理解、操作效率、任务完成、错误风险或信任的具体影响时才输出问题。
+- 一个问题只描述一个主要根因；合并重复问题；最多输出 5 个证据相对充分且对当前任务影响最大的问题。
+- 不得为了保证有结果而强行生成问题；没有证据充分的问题时返回空数组。
+
+严重程度只能为“高”“中”“低”：
+- 高：阻断核心任务，或可能造成数据丢失、隐私安全、资金、不可逆操作等严重风险。
+- 中：任务仍可完成，但需要明显绕行、额外理解或重复操作，或关键反馈、状态、信息表达不清。
+- 低：不阻断任务，但存在可验证的局部文案、布局、层级或效率问题，不包括单纯审美偏好。
+
+问题位置必须包含可供人工复核的客观证据。解决建议必须对应根因、具备可执行性，且不能在缺少业务背景时擅自改变产品策略。置信度使用 0 到 1 的数字，保留两位小数，表示当前材料支持该判断的程度，不代表严重程度。
+
+只输出合法 JSON，不要输出 Markdown、分析过程、开场白、总结或其他解释。`;
 
 function json(response, status, payload) {
   response.status(status);
@@ -108,23 +79,68 @@ function extractOutputText(payload) {
   return "";
 }
 
+function cleanText(value, fallback, maxLength = 240) {
+  const text = String(value || "").trim();
+  return (text || fallback).slice(0, maxLength);
+}
+
+function normalizeSeverity(value) {
+  const severity = String(value || "").trim().toLowerCase();
+  if (["高", "high"].includes(severity)) return "high";
+  if (["低", "low"].includes(severity)) return "low";
+  return "medium";
+}
+
+function normalizeEvidence(value) {
+  if (!value || typeof value !== "object") return null;
+  const x = Number(value.x);
+  const y = Number(value.y);
+  const width = Number(value.width);
+  const height = Number(value.height);
+  if (![x, y, width, height].every(Number.isFinite) || width <= 0 || height <= 0) return null;
+  const normalizedX = Math.min(0.98, Math.max(0, x));
+  const normalizedY = Math.min(0.98, Math.max(0, y));
+  return {
+    x: normalizedX,
+    y: normalizedY,
+    width: Math.min(1 - normalizedX, Math.max(0.02, width)),
+    height: Math.min(1 - normalizedY, Math.max(0.02, height)),
+  };
+}
+
 function normalizeResult(result) {
-  const issues = Array.isArray(result.issues) ? result.issues : [];
-  return issues.slice(0, 5).map((issue) => {
-    const evidence = issue.evidence || {};
-    const x = Math.min(0.95, Math.max(0, Number(evidence.x) || 0));
-    const y = Math.min(0.95, Math.max(0, Number(evidence.y) || 0));
+  const source = Array.isArray(result) ? result : result?.issues;
+  const issues = Array.isArray(source) ? source : [];
+  return issues.slice(0, 5).filter((issue) => issue && typeof issue === "object").map((issue) => {
+    const theoryValue = issue.theoretical_basis ?? issue.theory;
+    const theory = Array.isArray(theoryValue)
+      ? theoryValue.map((item) => cleanText(item, "", 80)).filter(Boolean).slice(0, 4)
+      : [cleanText(theoryValue, "", 80)].filter(Boolean);
     return {
-      ...issue,
+      title: cleanText(issue.problem_title ?? issue.title, "未命名体验问题", 48),
+      severity: normalizeSeverity(issue.severity),
+      location: cleanText(issue.problem_location ?? issue.location, "当前材料无法进一步定位", 180),
+      description: cleanText(issue.problem_description ?? issue.description, "模型未返回完整问题描述", 300),
+      suggestion: cleanText(issue.solution ?? issue.suggestion, "建议结合业务背景进行人工复核", 300),
       confidence: Math.min(1, Math.max(0, Number(issue.confidence) || 0)),
-      evidence: {
-        x,
-        y,
-        width: Math.min(1 - x, Math.max(0.05, Number(evidence.width) || 0.2)),
-        height: Math.min(1 - y, Math.max(0.05, Number(evidence.height) || 0.12)),
-      },
+      reason: cleanText(issue.reasoning ?? issue.reason, "模型未返回完整判断理由", 300),
+      theory,
+      evidence: normalizeEvidence(issue.evidence_box ?? issue.evidence),
     };
   });
+}
+
+function buildUserPrompt(input) {
+  return `本次用户任务：${input.task || "未提供；仅分析截图中的可观察证据，不推测完整操作流程"}
+页面名称：${input.pageName}
+内部体验质量模型：未提供
+体验红线与业务规则：未提供
+补充业务背景：未提供
+
+请输出一个 JSON 对象，结构为：
+{"issues":[{"problem_title":"不超过20个汉字","problem_description":"客观现象及用户影响","severity":"高/中/低","problem_location":"具体页面区域、控件、可见文案和可复核证据","solution":"与问题根因对应的可执行建议","confidence":0.00,"reasoning":"从客观证据到问题结论的判断逻辑","theoretical_basis":["直接相关的尼尔森原则或通用交互规范"],"evidence_box":{"x":0.00,"y":0.00,"width":0.00,"height":0.00}}]}
+
+evidence_box 使用相对整张截图的 0 到 1 小数坐标，x、y 为左上角，width、height 为宽高。无法可靠定位时必须返回 null，不得编造坐标。没有发现证据充分的问题时输出 {"issues":[]}。生成前检查证据、位置、用户影响、严重程度、建议、理论依据、重复问题和 JSON 合法性。`;
 }
 
 export default async function handler(request, response) {
@@ -172,22 +188,12 @@ export default async function handler(request, response) {
       body: JSON.stringify({
         model,
         messages: [
-          {
-            role: "system",
-            content: "你是一名严格、克制的高级用户体验评估专家。你必须只输出有效 JSON，不得输出 Markdown 或额外说明。",
-          },
+          { role: "system", content: SYSTEM_PROMPT },
           {
             role: "user",
             content: [
-              {
-                type: "image_url",
-                image_url: { url: input.image },
-                max_pixels: 2621440,
-              },
-              {
-                type: "text",
-                text: `请诊断这张“${input.pageName}”截图。\n用户核心任务：${input.task || "未提供，请从页面主要信息谨慎推断"}\n\n要求：\n1. 只报告截图中有明确视觉证据的问题，输出 1–5 个高价值问题，不要为了凑数重复表达。\n2. location 必须说明证据所在的具体页面区域。\n3. evidence 必须使用相对整张截图的 0–1 小数坐标，x/y 为左上角，width/height 为框的宽高，框选范围尽量紧贴证据。禁止输出像素值或 0–1000 坐标。\n4. severity 只能是 high、medium、low：high 表示阻碍核心任务或有明显误操作风险；medium 表示显著增加理解或操作成本；low 表示局部改进。\n5. suggestion 必须具体、可执行，并对应问题原因。\n6. theory 只引用真正适用的 UX 原则；confidence 为 0–1 小数。\n7. 使用简体中文，避免空泛表述，不分析图片水印或截图工具本身。\n\n请只返回以下结构的 JSON：\n{"issues":[{"title":"问题标题","severity":"high|medium|low","location":"具体页面区域","description":"问题描述","suggestion":"解决建议","confidence":0.85,"reason":"判断理由","theory":["适用原则"],"evidence":{"x":0.1,"y":0.2,"width":0.3,"height":0.1}}]}`,
-              },
+              { type: "image_url", image_url: { url: input.image }, max_pixels: 2621440 },
+              { type: "text", text: buildUserPrompt(input) },
             ],
           },
         ],
@@ -209,9 +215,7 @@ export default async function handler(request, response) {
     const outputText = extractOutputText(payload);
     if (!outputText) throw new Error("模型未返回结构化诊断结果");
     const result = JSON.parse(outputText);
-    const issues = normalizeResult(result);
-    if (issues.length === 0) throw new Error("模型未发现可验证的体验问题");
-    return json(response, 200, { model, issues });
+    return json(response, 200, { model, issues: normalizeResult(result) });
   } catch (error) {
     const message = error.name === "AbortError" ? "模型分析超时，请稍后重试" : error.message;
     return json(response, 502, { message: message || "真实诊断暂不可用" });
