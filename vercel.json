@@ -9,9 +9,27 @@
     {
       "source": "/api/(.*)",
       "headers": [
-        { "key": "X-Content-Type-Options", "value": "nosniff" },
-        { "key": "Referrer-Policy", "value": "same-origin" }
+        {
+          "key": "X-Content-Type-Options",
+          "value": "nosniff"
+        },
+        {
+          "key": "Referrer-Policy",
+          "value": "same-origin"
+        }
       ]
+    }
+  ],
+  "redirects": [
+    {
+      "source": "/ai-ux-diagnostic",
+      "destination": "https://ai-ux-diagnostic-demo.vercel.app/",
+      "permanent": true
+    },
+    {
+      "source": "/ai-ux-diagnostic/",
+      "destination": "https://ai-ux-diagnostic-demo.vercel.app/",
+      "permanent": true
     }
   ]
 }
