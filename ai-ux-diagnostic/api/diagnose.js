@@ -3,59 +3,146 @@ const MAX_REQUESTS_PER_WINDOW = 5;
 const requestBuckets = globalThis.__uxDiagnosisBuckets ?? new Map();
 globalThis.__uxDiagnosisBuckets = requestBuckets;
 
-const diagnosisSchema = {
-  type: "object",
-  additionalProperties: false,
-  required: ["issues"],
-  properties: {
-    issues: {
-      type: "array",
-      minItems: 1,
-      maxItems: 5,
-      items: {
-        type: "object",
-        additionalProperties: false,
-        required: [
-          "title",
-          "severity",
-          "location",
-          "description",
-          "suggestion",
-          "confidence",
-          "reason",
-          "theory",
-          "evidence",
-        ],
-        properties: {
-          title: { type: "string", minLength: 4, maxLength: 48 },
-          severity: { type: "string", enum: ["high", "medium", "low"] },
-          location: { type: "string", minLength: 4, maxLength: 100 },
-          description: { type: "string", minLength: 12, maxLength: 220 },
-          suggestion: { type: "string", minLength: 12, maxLength: 220 },
-          confidence: { type: "number", minimum: 0, maximum: 1 },
-          reason: { type: "string", minLength: 12, maxLength: 220 },
-          theory: {
-            type: "array",
-            minItems: 1,
-            maxItems: 4,
-            items: { type: "string", minLength: 2, maxLength: 40 },
-          },
-          evidence: {
-            type: "object",
-            additionalProperties: false,
-            required: ["x", "y", "width", "height"],
-            properties: {
-              x: { type: "number", minimum: 0, maximum: 1 },
-              y: { type: "number", minimum: 0, maximum: 1 },
-              width: { type: "number", minimum: 0.05, maximum: 1 },
-              height: { type: "number", minimum: 0.05, maximum: 1 },
-            },
-          },
-        },
-      },
-    },
-  },
-};
+const ANALYSIS_PROMPT = `# 角色定位
+
+你是一名资深互联网产品体验分析专家，负责分析用户提供的文本、产品截图、页面截图、操作录屏或录屏关键帧，发现其中可能影响用户理解、操作和任务完成的体验问题。
+
+你的定位是“辅助问题发现”，不是代替产品经理或体验专家做最终判断。
+
+你的分析结果必须做到：
+1. 有明确证据；
+2. 能定位到具体页面、元素或操作节点；
+3. 判断过程可解释；
+4. 结论可以被人工复核；
+5. 不把猜测包装成事实。
+
+# 分析目标
+
+结合以下依据识别体验问题：
+
+## 1. 尼尔森十大可用性原则
+
+- 系统状态可见
+- 系统与现实世界匹配
+- 用户控制与自由
+- 一致性与标准
+- 错误预防
+- 识别优于回忆
+- 灵活性与使用效率
+- 简洁且美观
+- 帮助用户识别、诊断和恢复错误
+- 帮助与文档
+
+## 2. 内部体验质量模型
+
+如果没有提供内部体验质量模型，则仅依据尼尔森原则、通用交互规范和输入材料中的可观察证据进行判断，不得自行编造内部规则。
+
+## 3. 体验红线与业务规则
+
+如果没有提供体验红线或业务规则，不得假设某项设计违反内部规范。
+
+# 分析要求
+
+## 一、基于证据判断
+
+仅分析输入材料中能够直接观察或由连续操作过程合理确认的问题。
+
+每个问题都必须能够回答：
+- 问题发生在哪里？
+- 用户进行了什么操作？
+- 页面或系统出现了什么结果？
+- 为什么这会影响用户？
+- 判断依据是什么？
+
+如果证据不足，只能降低置信度或不输出该问题，不得补充输入材料中不存在的页面状态、用户行为、产品逻辑或业务规则。
+
+禁止使用以下方式生成结论：
+- 根据单张截图推测完整操作流程；
+- 根据视觉表现推断后台故障；
+- 根据个人审美将偏好差异直接判定为体验问题；
+- 将尚未发生的风险描述成已经发生的问题；
+- 编造按钮、文案、页面、时间点或系统反馈；
+- 使用“用户一定会”“必然导致”等无法由证据支持的绝对表述。
+
+## 二、问题成立条件
+
+只有同时满足以下条件时，才输出问题：
+1. 输入材料中存在明确或可定位的证据；
+2. 该现象违反可说明的体验原则、交互规范、内部规则或体验红线；
+3. 能说明它对用户理解、操作效率、任务完成、错误风险或使用信任造成的具体影响。
+
+仅存在“可以优化”“不够好看”“感觉不合理”等主观判断时，不应输出为正式问题。
+
+## 三、问题拆分与去重
+
+- 一个问题卡片只描述一个主要问题；
+- 相同根因在不同画面重复出现时，应合并为一个问题；
+- 同一位置存在不同根因、不同用户影响时，可以拆分；
+- 不要为了增加问题数量重复描述同一现象；
+- 优先输出对用户任务有实际影响的问题；
+- 最多输出 5 个证据充分且价值最高的问题。
+
+## 四、严重程度
+
+严重程度只能输出“高”“中”“低”。
+
+高：阻断核心任务，或涉及数据丢失、隐私安全、资金、不可逆操作、明确体验红线等严重风险。
+
+中：任务仍可完成，但需要明显绕行、重复操作或额外理解；关键信息、反馈或状态不清，明显影响效率、理解或信任。
+
+低：不阻断任务，但存在可验证的局部文案、布局、视觉层级或操作效率问题；不包括单纯审美偏好。
+
+严重程度应根据实际用户影响判断，不得为了突出问题而夸大等级。
+
+## 五、问题位置与证据
+
+问题位置必须尽可能具体：
+- 文本：指出对应语句、字段或步骤；
+- 截图：指出页面区域、控件名称、可见文案或相关状态；
+- 录屏：指出时间点或时间段、用户操作以及系统反馈；
+- 多张图片：指出对应图片序号；
+- 无法准确定位时，明确写出“当前材料无法进一步定位”，不得编造坐标或时间点。
+
+“问题位置”中需要同时包含可供人工复核的客观证据，不要只写“首页”“按钮区域”等模糊描述。
+
+## 六、解决建议
+
+解决建议必须与问题根因和用户影响直接对应，说明需要调整的信息、交互、反馈或状态，具备可执行性，并尽量保留现有业务目标。不得在缺少业务背景时擅自改变产品策略，也不得把未经验证的方案描述成唯一正确方案。
+
+## 七、置信度
+
+置信度使用 0～1 之间的数字，保留两位小数。综合考虑证据清晰度、位置可定位性、操作过程连续性、用户影响是否可直接确认、是否依赖业务背景或主观推断，以及判断依据是否明确。
+
+置信度表示“当前材料支持该判断的程度”，不代表问题严重程度。
+
+# 输出要求
+
+1. 只输出合法 JSON；
+2. 不要输出 Markdown；
+3. 不要输出分析过程、开场白、总结或其他解释；
+4. 所有问题放在同一个 issues 数组中；
+5. 字段不得缺失；
+6. 没有发现证据充分的问题时，输出 {"issues":[]}；
+7. 不得为了保证有结果而强行生成问题；
+8. 使用简洁、专业、易于产品人员理解的中文；
+9. 判断理由与理论依据需要让人工能够复核；
+10. 不输出综合评分、页面总览或额外字段。
+
+# 输出前自检
+
+生成结果前，逐项检查：
+1. 每个问题是否都有输入材料中的证据？
+2. 问题位置是否能够被人工找到并复核？
+3. 是否把推测、可能性或个人偏好写成了事实？
+4. 是否说明了问题对用户造成的具体影响？
+5. 严重程度是否与影响范围和任务阻断程度匹配？
+6. 建议是否针对问题根因，而不是空泛表达？
+7. 理论依据是否与问题直接相关？
+8. 是否存在相同问题的重复输出？
+9. JSON 是否能够被程序直接解析？
+10. 如果证据不足，是否已经删除该问题或降低置信度？
+
+完成自检后，只输出最终 JSON。`;
 
 function json(response, status, payload) {
   response.status(status);
@@ -88,15 +175,52 @@ function parseBody(request) {
 function validateInput(body) {
   const pageName = String(body.pageName || "").trim().slice(0, 80);
   const task = String(body.task || "").trim().slice(0, 300);
-  const image = String(body.image || "");
   if (!pageName) throw new Error("请填写页面名称");
+  const mediaType = body.mediaType === "video" ? "video" : "image";
+  if (mediaType === "video") {
+    const frames = Array.isArray(body.frames) ? body.frames.map(String) : [];
+    if (frames.length < 4 || frames.length > 40) {
+      throw new Error("视频需要提取 4–40 帧变化证据");
+    }
+    if (frames.some((frame) => !/^data:image\/jpeg;base64,/i.test(frame))) {
+      throw new Error("视频关键帧格式无效");
+    }
+    if (frames.reduce((total, frame) => total + frame.length, 0) > 4.2 * 1024 * 1024) {
+      throw new Error("视频关键帧数据过大，请压缩后重试");
+    }
+    const duration = Number(body.duration);
+    const timestamps = Array.isArray(body.timestamps)
+      ? body.timestamps.map(Number).filter(Number.isFinite).slice(0, frames.length)
+      : [];
+    if (!Number.isFinite(duration) || duration <= 0 || duration > 90) {
+      throw new Error("演示版暂支持 90 秒以内的视频");
+    }
+    if (timestamps.length !== frames.length
+      || timestamps.some((time, index) => time < 0 || time > duration || (index > 0 && time <= timestamps[index - 1]))) {
+      throw new Error("视频证据帧时间映射无效");
+    }
+    const scanFrameCount = Math.max(frames.length, Math.min(240, Number(body.scanFrameCount) || frames.length));
+    const changeWindows = Array.isArray(body.changeWindows)
+      ? body.changeWindows.map((window) => ({
+          start: Number(window?.start),
+          end: Number(window?.end),
+        })).filter((window) => Number.isFinite(window.start)
+          && Number.isFinite(window.end)
+          && window.start >= 0
+          && window.end >= window.start
+          && window.end <= duration).slice(0, 20)
+      : [];
+    return { pageName, task, mediaType, frames, duration, timestamps, changeWindows, scanFrameCount };
+  }
+
+  const image = String(body.image || "");
   if (!/^data:image\/(png|jpeg|webp);base64,/i.test(image)) {
     throw new Error("仅支持 PNG、JPEG 或 WebP 图片");
   }
   if (image.length > 5.6 * 1024 * 1024) {
     throw new Error("图片不能超过 4 MB");
   }
-  return { pageName, task, image };
+  return { pageName, task, mediaType, image };
 }
 
 function extractOutputText(payload) {
@@ -108,23 +232,67 @@ function extractOutputText(payload) {
   return "";
 }
 
+function cleanText(value, fallback, maxLength = 240) {
+  const text = String(value || "").trim();
+  return (text || fallback).slice(0, maxLength);
+}
+
+function normalizeSeverity(value) {
+  const severity = String(value || "").trim().toLowerCase();
+  if (["高", "high"].includes(severity)) return "high";
+  if (["低", "low"].includes(severity)) return "low";
+  return "medium";
+}
+
 function normalizeResult(result) {
-  const issues = Array.isArray(result.issues) ? result.issues : [];
-  return issues.slice(0, 5).map((issue) => {
-    const evidence = issue.evidence || {};
-    const x = Math.min(0.95, Math.max(0, Number(evidence.x) || 0));
-    const y = Math.min(0.95, Math.max(0, Number(evidence.y) || 0));
+  const source = Array.isArray(result) ? result : result?.issues;
+  const issues = Array.isArray(source) ? source : [];
+  return issues.slice(0, 5).filter((issue) => issue && typeof issue === "object").map((issue) => {
+    const theoryValue = issue.theoretical_basis ?? issue.theory;
+    const theory = Array.isArray(theoryValue)
+      ? theoryValue.map((item) => cleanText(item, "", 80)).filter(Boolean).slice(0, 4)
+      : [cleanText(theoryValue, "", 80)].filter(Boolean);
     return {
-      ...issue,
+      title: cleanText(issue.problem_title ?? issue.title, "未命名体验问题", 48),
+      severity: normalizeSeverity(issue.severity),
+      location: cleanText(issue.problem_location ?? issue.location, "当前材料无法进一步定位", 180),
+      description: cleanText(issue.problem_description ?? issue.description, "模型未返回完整问题描述", 300),
+      suggestion: cleanText(issue.solution ?? issue.suggestion, "建议结合业务背景进行人工复核", 300),
       confidence: Math.min(1, Math.max(0, Number(issue.confidence) || 0)),
-      evidence: {
-        x,
-        y,
-        width: Math.min(1 - x, Math.max(0.05, Number(evidence.width) || 0.2)),
-        height: Math.min(1 - y, Math.max(0.05, Number(evidence.height) || 0.12)),
-      },
+      reason: cleanText(issue.reasoning ?? issue.reason, "模型未返回完整判断理由", 300),
+      theory,
     };
   });
+}
+
+function formatTimestamp(seconds) {
+  const minutes = Math.floor(seconds / 60);
+  const remainder = seconds - minutes * 60;
+  return `${String(minutes).padStart(2, "0")}:${remainder.toFixed(1).padStart(4, "0")}`;
+}
+
+function buildUserPrompt(input) {
+  const material = input.mediaType === "video"
+    ? `一段时长 ${input.duration.toFixed(1)} 秒的操作录屏。浏览器先扫描 ${input.scanFrameCount} 帧，再通过相邻帧差异筛选出 ${input.frames.length} 帧变化证据。证据帧按时间升序排列但不是等间隔采样；帧序号与真实时间映射：${input.timestamps.map((time, index) => `帧${String(index + 1).padStart(2, "0")}=${formatTimestamp(time)}`).join("、")}。检测到的变化区间：${input.changeWindows.length > 0 ? input.changeWindows.map((window) => `${formatTimestamp(window.start)}–${formatTimestamp(window.end)}`).join("、") : "未单独提供"}`
+    : "一张页面截图";
+  const locationRule = input.mediaType === "video"
+    ? "必须将前后证据帧作为有序序列进行比较，只在序列能够合理确认状态变化时输出流程性问题。问题位置必须写明 MM:SS 格式的时间点或时间段，并同时描述用户操作与可见的系统反馈；不要输出坐标或画面框选。"
+    : "问题位置仅使用清晰的文本描述，不输出坐标。描述中应包含页面区域、控件或可见文案等可供人工复核的证据。";
+  return `${ANALYSIS_PROMPT}
+
+# 本次输入
+
+本次用户任务：${input.task || "未提供；仅分析材料中的可观察证据，不推测完整操作流程"}
+页面名称：${input.pageName}
+本次分析材料：${material}
+内部体验质量模型：未提供
+体验红线与业务规则：未提供
+补充业务背景：未提供
+
+请输出一个 JSON 对象，结构为：
+{"issues":[{"problem_title":"不超过20个汉字","problem_description":"客观现象及用户影响","severity":"高/中/低","problem_location":"具体页面区域、控件、可见文案和可复核证据","solution":"与问题根因对应的可执行建议","confidence":0.00,"reasoning":"从客观证据到问题结论的判断逻辑","theoretical_basis":["直接相关的尼尔森原则或通用交互规范"]}]}
+
+${locationRule}`;
 }
 
 export default async function handler(request, response) {
@@ -132,6 +300,8 @@ export default async function handler(request, response) {
     return json(response, 200, {
       status: process.env.DASHSCOPE_API_KEY ? "ready" : "configuration_required",
       provider: "qwen",
+      model: process.env.QWEN_MODEL || "qwen3-vl-flash",
+      thinking: process.env.QWEN_ENABLE_THINKING !== "false",
     });
   }
   if (request.method !== "POST") {
@@ -173,26 +343,24 @@ export default async function handler(request, response) {
         model,
         messages: [
           {
-            role: "system",
-            content: "你是一名严格、克制的高级用户体验评估专家。你必须只输出有效 JSON，不得输出 Markdown 或额外说明。",
-          },
-          {
             role: "user",
-            content: [
-              {
-                type: "image_url",
-                image_url: { url: input.image },
-                max_pixels: 2621440,
-              },
-              {
-                type: "text",
-                text: `请诊断这张“${input.pageName}”截图。\n用户核心任务：${input.task || "未提供，请从页面主要信息谨慎推断"}\n\n要求：\n1. 只报告截图中有明确视觉证据的问题，输出 1–5 个高价值问题，不要为了凑数重复表达。\n2. location 必须说明证据所在的具体页面区域。\n3. evidence 必须使用相对整张截图的 0–1 小数坐标，x/y 为左上角，width/height 为框的宽高，框选范围尽量紧贴证据。禁止输出像素值或 0–1000 坐标。\n4. severity 只能是 high、medium、low：high 表示阻碍核心任务或有明显误操作风险；medium 表示显著增加理解或操作成本；low 表示局部改进。\n5. suggestion 必须具体、可执行，并对应问题原因。\n6. theory 只引用真正适用的 UX 原则；confidence 为 0–1 小数。\n7. 使用简体中文，避免空泛表述，不分析图片水印或截图工具本身。\n\n请只返回以下结构的 JSON：\n{"issues":[{"title":"问题标题","severity":"high|medium|low","location":"具体页面区域","description":"问题描述","suggestion":"解决建议","confidence":0.85,"reason":"判断理由","theory":["适用原则"],"evidence":{"x":0.1,"y":0.2,"width":0.3,"height":0.1}}]}`,
-              },
-            ],
+            content: input.mediaType === "video"
+              ? [
+                  { type: "text", text: buildUserPrompt(input) },
+                  { type: "text", text: "以下是通过相邻帧比对筛选出的变化证据序列。每张图前的文字是该帧在原视频中的真实时间。" },
+                  ...input.frames.flatMap((frame, index) => [
+                    { type: "text", text: `证据帧 ${String(index + 1).padStart(2, "0")}，时间 ${formatTimestamp(input.timestamps[index])}` },
+                    { type: "image_url", image_url: { url: frame }, max_pixels: 655360 },
+                  ]),
+                ]
+              : [
+                  { type: "text", text: buildUserPrompt(input) },
+                  { type: "image_url", image_url: { url: input.image }, max_pixels: 2621440 },
+                ],
           },
         ],
         response_format: { type: "json_object" },
-        enable_thinking: false,
+        enable_thinking: process.env.QWEN_ENABLE_THINKING !== "false",
         max_tokens: 3500,
       }),
       signal: controller.signal,
@@ -209,9 +377,7 @@ export default async function handler(request, response) {
     const outputText = extractOutputText(payload);
     if (!outputText) throw new Error("模型未返回结构化诊断结果");
     const result = JSON.parse(outputText);
-    const issues = normalizeResult(result);
-    if (issues.length === 0) throw new Error("模型未发现可验证的体验问题");
-    return json(response, 200, { model, issues });
+    return json(response, 200, { model, issues: normalizeResult(result) });
   } catch (error) {
     const message = error.name === "AbortError" ? "模型分析超时，请稍后重试" : error.message;
     return json(response, 502, { message: message || "真实诊断暂不可用" });
