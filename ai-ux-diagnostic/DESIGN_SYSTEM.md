@@ -4,7 +4,7 @@
 
 1. **信息优先**：界面服务于证据复核与问题判断，不使用无信息价值的装饰。
 2. **色块分层**：卡片默认无描边、无阴影，使用背景色阶与间距建立层级。
-3. **绿色克制**：绿色只表示品牌、成功、选中和当前状态，不作为普通问题卡的大面积底色。
+3. **单一标准绿**：全产品只使用一个绿色 `#2EE55C`，用于品牌、成功、选中和当前状态，不再拆分浅绿与深绿。
 4. **四点网格**：尺寸和间距均以 4px 为基础单位，禁止出现无依据的 5px、7px、10px、14px 等间距。
 5. **层级稳定**：同一层级使用相同字号、字重、圆角和表面色，不因页面不同而改变。
 
@@ -12,17 +12,13 @@
 
 ### 2.1 品牌绿色
 
-标准色只有一个：`Brand 500 #2EE55C`。浅色背景和深色文字必须从同一绿色色阶取值，不得临时新增近似绿。
-
 | Token | 色值 | 用途 |
 | --- | --- | --- |
-| `--brand-50` | `#F0FCF3` | 轻量状态背景、诊断总览背景 |
-| `--brand-100` | `#E2F8E7` | 选中标签、成功徽标、当前序号背景 |
-| `--brand-500` | `#2EE55C` | 品牌标识、主按钮、时间轴活动节点 |
-| `--brand-600` | `#20C84C` | 主按钮 Hover、强调图标 |
-| `--brand-700` | `#166B2E` | 浅绿底上的文字和图标 |
+| `--brand` | `#2EE55C` | Logo、分析完成、复核案例、主按钮、选中状态、时间轴活动节点 |
 
-禁止使用：`#68EA86`、`#79EF95`、`#E5FAEA`、`#DFF6E4` 等游离于标准色阶之外的绿色。
+品牌不建立浅绿、深绿或近似绿色阶。绿色底统一搭配 `--text-strong #151714`；Hover 只通过亮度变化表达，不新增色值。普通提示、诊断总结和问题卡使用中性色。
+
+禁止使用：`#20C84C`、`#166B2E`、`#E2F8E7`、`#68EA86`、`#79EF95`、`#E5FAEA`、`#DFF6E4` 等第二套绿色。
 
 ### 2.2 中性色
 
@@ -44,7 +40,7 @@
 | --- | --- | --- | --- |
 | 高风险 | `#FFF0EF` | `#BD3F3B` | 高风险标签、错误状态 |
 | 中风险 | `#FFF4E8` | `#C76508` | 中风险标签、警示状态 |
-| 低风险/完成 | `--brand-100` | `--brand-700` | 低风险标签、完成状态 |
+| 低风险/完成 | `--brand` | `--text-strong` | 低风险标签、完成状态 |
 
 语义色只用于状态标签、图标和必要提示，不铺满整张问题卡。
 
@@ -53,7 +49,7 @@
 - 中性色：85%–90%
 - 品牌绿色及其色阶：5%–10%
 - 风险语义色：不超过 5%
-- 单个视图内不得同时出现两套绿色体系。
+- 单个视图内只允许出现 `#2EE55C` 一种绿色。
 
 ## 3. 字体与排版
 
@@ -157,7 +153,7 @@ Inter, "SF Pro Text", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif
 
 - 标准高度：38–40px；紧凑按钮：30–32px。
 - 水平内边距：12px；图标与文字间距：8px。
-- 主按钮：`brand-500`；Hover 使用 `brand-600`。
+- 主按钮：`--brand`；Hover 只调整亮度，不新增绿色。
 - 次按钮：`surface-secondary`；Hover 使用 `surface-tertiary`。
 - 禁用：`surface-secondary + text-disabled`，不降低到难以辨认的透明度。
 
@@ -166,7 +162,7 @@ Inter, "SF Pro Text", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif
 - 容器无描边，背景使用 `surface-primary` 或透明。
 - 单项高度 30–32px，圆角 8px。
 - 默认 `surface-secondary`，Hover `surface-tertiary`。
-- 选中使用 `brand-100 + brand-700`。
+- 选中使用 `--brand + --text-strong`。
 - “一键展开/收起”与筛选项保持同高度、同圆角、同字号。
 
 ### 7.3 统计卡
@@ -179,7 +175,7 @@ Inter, "SF Pro Text", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif
 ### 7.4 问题卡
 
 - 默认与展开状态均为 `surface-secondary`，圆角 8px，无描边。
-- 当前问题不使用绿色整卡背景，只将序号切换为 `brand-100 + brand-700`。
+- 当前问题不使用绿色整卡背景，只将序号切换为 `--brand + --text-strong`。
 - 标题区内边距 12px；展开内容与标题间不加分割线。
 - 字段卡使用 `surface-primary`、6px 圆角、12px 内边距、8px 间距。
 - 反馈区使用 `surface-tertiary`，保持 6px 内圆角。
@@ -203,8 +199,8 @@ Inter, "SF Pro Text", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif
 | --- | --- |
 | Default | 中性表面，无描边 |
 | Hover | 背景提高一级：Secondary → Tertiary |
-| Active/Selected | 局部使用 Brand 100 + Brand 700 |
-| Focus | 2px Brand 500 焦点环，2px offset |
+| Active/Selected | 局部使用 `--brand + --text-strong` |
+| Focus | 2px `--brand` 焦点环，2px offset |
 | Disabled | 中性背景 + Disabled 文字，保留可读性 |
 | Loading | 保持组件尺寸，避免布局跳动 |
 | Error | Danger 50 背景 + Danger 600 文字/图标 |
@@ -227,7 +223,7 @@ Inter, "SF Pro Text", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif
 
 每次发布前必须逐项检查：
 
-- [ ] 页面只出现规范内的 5 个绿色 Token。
+- [ ] 页面只出现 `#2EE55C` 一种绿色。
 - [ ] 问题卡没有大面积绿色背景。
 - [ ] 卡片默认无描边、无阴影。
 - [ ] 外层卡片为 8px，内嵌模块为 6px。
