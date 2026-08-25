@@ -1,4 +1,4 @@
-# AI 体验诊断台设计规范 V1.3
+# AI 体验诊断台设计规范 V1.4
 
 ## 1. 规范基线
 
@@ -103,9 +103,9 @@
 
 ### 6.2 统计卡
 
-- 三张统计卡均使用 `surface-secondary`、8px 圆角和 12px 内边距。
+- 统计区只保留“问题总数”和“高/中风险总数”两张卡，使用 `surface-secondary`、8px 圆角和 12px 内边距。
 - 问题总数与混合风险数量的图标统一使用 `surface-tertiary + text-default`。
-- 只有“完成”图标使用品牌绿；卡片本身不铺绿色。
+- 不设置“完成 / 分析完成”统计卡；完成状态只在顶部状态徽标表达一次。
 - 统计卡外不再增加容器描边。
 
 ### 6.3 风险标签与问题卡
@@ -146,7 +146,29 @@
 - 项目标题按钮必须提供 `aria-expanded` 和明确的展开/收起名称。
 - 规则总数使用中性色统计卡，数字使用 `24/32px`、600 字重，禁止使用低对比度浅色文字。
 
-## 7. 交互与无障碍
+## 7. 动效规范
+
+本项目使用 Ant Design 5 的 `100 / 200 / 300ms` 时长层级，并采用 IBM Carbon Productive Motion 的标准、进入和退出缓动曲线。动效只用于解释状态变化、维持空间连续性和提供即时反馈，不使用弹跳、回弹或装饰性循环。
+
+| Token | 数值 | 用途 |
+| --- | --- | --- |
+| `--motion-duration-fast` | `100ms` | Hover、按压、颜色和轻微透明度反馈 |
+| `--motion-duration-mid` | `200ms` | 展开/收起、下拉菜单、页面内容进入、弹窗 |
+| `--motion-duration-slow` | `300ms` | 大面积或重要层级变化，谨慎使用 |
+| `--motion-ease-standard` | `cubic-bezier(0.2, 0, 0.38, 0.9)` | 始终可见元素的尺寸与位置变化 |
+| `--motion-ease-enter` | `cubic-bezier(0, 0, 0.38, 0.9)` | 新元素进入或用户触发的展开 |
+| `--motion-ease-exit` | `cubic-bezier(0.2, 0, 1, 0.9)` | 元素离场或收起 |
+
+组件规则：
+
+- 项目组和问题详情展开/收起必须同时过渡高度与透明度，箭头在 200ms 内连续旋转，禁止在上下箭头两个图标之间瞬切。
+- 页面切换只允许 `4px + opacity` 的轻量进入，避免大幅横移导致用户丢失上下文。
+- 下拉菜单从触发器方向向下进入，位移不超过 4px；弹窗位移不超过 8px、缩放不低于 98.5%。
+- Hover 使用 100ms，按压只允许 1px 位移；证据缩略图 Hover 不改变真实时间轴横坐标。
+- Toast 和错误通知使用 8px 以内的垂直进入；加载旋转可使用 Linear，其余位移动效禁止 Linear。
+- 必须支持 `prefers-reduced-motion: reduce`，将所有非必要动画压缩为 1ms，并关闭平滑滚动。
+
+## 8. 交互与无障碍
 
 | 状态 | 规则 |
 | --- | --- |
@@ -159,7 +181,7 @@
 
 正文文字对比度目标不低于 4.5:1；大号文字和关键 UI 图形不低于 3:1。所有图标按钮必须提供可访问名称或 `title`。
 
-## 8. 发布前自查
+## 9. 发布前自查
 
 - [ ] Logo、主操作、选中项、活动证据、专家复核和分析完成仅使用 `#58C878`。
 - [ ] “高 + 中”统计图标为中性色，没有额外橙色。
@@ -174,8 +196,11 @@
 - [ ] 诊断正文为 14px，辅助说明为 12px；置信度标签与数值上下居中。
 - [ ] 时间轴节点按真实时间比例定位，缩略图与节点中心对齐，近邻缩略图只做纵向避让。
 - [ ] 时间轴所有避让层完整可见；项目组可展开/收起；规则总数对比清晰。
+- [ ] 统计区只有问题数与风险数，没有重复的“分析完成”卡。
+- [ ] Hover 使用 100ms，展开/弹窗使用 200ms；进入、退出与持续变化使用对应缓动。
+- [ ] 项目、问题详情和方向箭头连续过渡，没有瞬时跳变；开启减少动态效果后仍可完成全部任务。
 
-## 9. 官方来源
+## 10. 官方来源
 
 - [Ant Design 色彩规范](https://ant.design/docs/spec/colors/)：功能色应表达清晰状态，并在同一产品内保持一致。
 - [Ant Design 主题 Token](https://ant.design/docs/react/customize-theme/)：以全局 Seed/Map/Alias Token 管理主题，不在组件内散落颜色值。
@@ -184,3 +209,6 @@
 - [Material Design 3 Color Roles](https://m3.material.io/styles/color/roles)：按 Primary、Surface、Error 等角色分配颜色。
 - [IBM Carbon Status Indicator](https://carbondesignsystem.com/patterns/status-indicator-pattern/)：状态需同时使用颜色、形状与文字，提高扫描和无障碍表现。
 - [IBM Carbon Accessibility](https://carbondesignsystem.com/guidelines/accessibility/color/)：正文 4.5:1，大文字和 UI 组件 3:1。
+- [Ant Design 5 主题 Token](https://ant.design/docs/react/customize-theme/)：动效时长 Token 为 Fast 0.1s、Mid 0.2s、Slow 0.3s。
+- [Ant Design 动效原则](https://3x.ant.design/docs/spec/motion-cn)：企业界面动效应自然、高效、简洁，并以明确目的服务交互。
+- [IBM Carbon Motion](https://carbondesignsystem.com/elements/motion/overview/)：按 Standard / Entrance / Exit 区分缓动，生产型动效强调快速、克制与一致。
